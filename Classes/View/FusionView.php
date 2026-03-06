@@ -1,10 +1,16 @@
 <?php
+
 namespace Networkteam\Neos\ContentApi\View;
 
 use Neos\Flow\Annotations as Flow;
 use GuzzleHttp\Psr7\Message;
+use Neos\Flow\Mvc\ActionRequest;
+use Neos\Neos\Domain\Model\RenderingMode;
+use Neos\Neos\Domain\Repository\SiteRepository;
+use Psr\Http\Message\StreamInterface;
 use Neos\ContentRepository\Domain\Model\NodeInterface as LegacyNodeInterface;
 use Neos\ContentRepository\Domain\Projection\Content\TraversableNodeInterface;
+use Neos\ContentRepositoryRegistry\ContentRepositoryRegistry;
 use Neos\Flow\Mvc\View\AbstractView;
 use Neos\Flow\Security\Context;
 use Neos\Fusion\Core\Runtime;
@@ -13,6 +19,10 @@ use Neos\Neos\Domain\Service\FusionService;
 use Neos\Neos\Exception;
 use Neos\Neos\View\FusionViewI18nTrait;
 use Psr\Http\Message\ResponseInterface;
+use Neos\ContentRepository\Core\Projection\ContentGraph\Node;
+use Neos\Neos\Domain\Service\RenderingModeService;
+use Neos\Fusion\Core\RuntimeFactory;
+use Neos\Fusion\Core\FusionGlobals;
 
 /**
  * A flexible Fusion view based on Neos FusionView (using the FusionService)
@@ -33,7 +43,18 @@ class FusionView extends AbstractView
      * @var array
      */
     protected $supportedOptions = [
-        'extraContextVariables' => [[], 'Extra context variables to pass to the Fusion runtime', 'array']
+        'extraContextVariables' => [[], 'Extra context variables to pass to the Fusion runtime', 'array'],
+        // The following 2 are derived from Neos\Neos\View\FusionView
+        'enableContentCache' => [
+            null,
+            'Flag to enable content caching inside Fusion (overriding the global setting).',
+            'boolean'
+        ],
+        'renderingModeName' => [
+            RenderingMode::FRONTEND,
+            'Name of the user interface mode to use',
+            'string'
+        ]
     ];
 
     /**
@@ -54,66 +75,47 @@ class FusionView extends AbstractView
      */
     protected $securityContext;
 
+    #[Flow\Inject]
+    protected ContentRepositoryRegistry $contentRepositoryRegistry;
+
+    #[Flow\Inject]
+    protected RuntimeFactory $runtimeFactory;
+
+    #[Flow\Inject]
+    protected SiteRepository $siteRepository;
+
+    #[Flow\Inject]
+    protected RenderingModeService $renderingModeService;
+
+    /**
+     * Via {@see assign} request using the "request" key,
+     * will be available also as Fusion global in the runtime.
+     */
+    protected ?ActionRequest $assignedActionRequest = null;
+
     /**
      * Renders the view
      *
-     * @return string|ResponseInterface The rendered view
+     * @return StreamInterface|ResponseInterface The rendered view
      * @throws \Exception if no node is given
      * @throws \Throwable
      * @api
      */
-    public function render()
+    public function render(): StreamInterface|ResponseInterface
     {
-        $currentNode = $this->getCurrentNode();
+
+        // TODO 9.0: use DimensionSpacePoint
+//        $this->setFallbackRuleFromDimension($currentNode);
+
         $currentSiteNode = $this->getCurrentSiteNode();
         $fusionRuntime = $this->getFusionRuntime($currentSiteNode);
 
-        $this->setFallbackRuleFromDimension($currentNode);
-
         $extraContextVariables = $this->variables['extraContextVariables'] ?? [];
 
-        $fusionRuntime->pushContextArray(array_merge($extraContextVariables, [
-            'node' => $currentNode,
-            'documentNode' => $this->getClosestDocumentNode($currentNode) ?: $currentNode,
-            'site' => $currentSiteNode,
-        ]));
-        try {
-            $output = $fusionRuntime->render($this->fusionPath);
-            $output = $this->parsePotentialRawHttpResponse($output);
-        } catch (RuntimeException $exception) {
-            throw $exception->getPrevious();
-        }
-        $fusionRuntime->popContext();
-
-        return $output;
-    }
-
-    /**
-     * @param string $output
-     * @return string|ResponseInterface If output is a string with a HTTP preamble a ResponseInterface otherwise the original output.
-     */
-    protected function parsePotentialRawHttpResponse($output)
-    {
-        if ($this->isRawHttpResponse($output)) {
-            return Message::parseResponse($output);
-        }
-
-        return $output;
-    }
-
-    /**
-     * Checks if the mixed input looks like a raw HTTTP response.
-     *
-     * @param mixed $value
-     * @return bool
-     */
-    protected function isRawHttpResponse($value): bool
-    {
-        if (is_string($value) && strpos($value, 'HTTP/') === 0) {
-            return true;
-        }
-
-        return false;
+        return $fusionRuntime->renderEntryPathWithContext(
+            $this->getFusionPath(),
+            array_merge($this->variables, $extraContextVariables)
+        );
     }
 
     /**
@@ -128,66 +130,73 @@ class FusionView extends AbstractView
     }
 
     /**
+     * Determines the Fusion path depending on the current controller and action
+     *
      * @return string
      */
-    public function getFusionPath()
+    protected function getFusionPath()
     {
         return $this->fusionPath;
     }
 
     /**
-     * @param TraversableNodeInterface $node
-     * @return TraversableNodeInterface
-     */
-    protected function getClosestDocumentNode(TraversableNodeInterface $node)
-    {
-        while ($node !== null && !$node->getNodeType()->isOfType('Neos.Neos:Document')) {
-            $node = $node->findParentNode();
-        }
-        return $node;
-    }
-
-    /**
-     * @return TraversableNodeInterface
+     * @return Node
      * @throws Exception
      */
-    protected function getCurrentSiteNode(): TraversableNodeInterface
+    protected function getCurrentSiteNode(): Node
     {
         $currentNode = isset($this->variables['site']) ? $this->variables['site'] : null;
-        if ($currentNode === null && $this->getCurrentNode() instanceof LegacyNodeInterface) {
+        if ($currentNode === null && $this->getCurrentNode() instanceof Node) {
+            // TODO 9.0 use new CR to fetch SiteNode
             // fallback to Legacy node API
             /* @var $node LegacyNodeInterface */
             $node = $this->getCurrentNode();
             return $node->getContext()->getCurrentSiteNode();
         }
-        if (!$currentNode instanceof TraversableNodeInterface) {
+        if (!$currentNode instanceof Node) {
             throw new Exception('FusionView needs a variable \'site\' set with a Node object.', 1715164625);
         }
         return $currentNode;
     }
 
     /**
-     * @return TraversableNodeInterface
+     * @return Node
      * @throws Exception
      */
-    protected function getCurrentNode(): TraversableNodeInterface
+    protected function getCurrentNode(): Node
     {
         $currentNode = isset($this->variables['node']) ? $this->variables['node'] : null;
-        if (!$currentNode instanceof TraversableNodeInterface) {
+        if (!$currentNode instanceof Node) {
             throw new Exception('FusionView needs a variable \'node\' set with a Node object.', 1715164626);
         }
         return $currentNode;
     }
 
-
     /**
-     * @param TraversableNodeInterface $currentSiteNode
+     * @param Node $currentSiteNode
      * @return \Neos\Fusion\Core\Runtime
      */
-    protected function getFusionRuntime(TraversableNodeInterface $currentSiteNode)
+    protected function getFusionRuntime(Node $currentSiteNode)
     {
         if ($this->fusionRuntime === null) {
-            $this->fusionRuntime = $this->fusionService->createRuntime($currentSiteNode, $this->controllerContext);
+            $site = $this->siteRepository->findSiteBySiteNode($currentSiteNode);
+            $fusionConfiguration = $this->fusionService->createFusionConfigurationFromSite($site);
+
+            $renderingMode = $this->renderingModeService->findByName($this->getOption('renderingModeName'));
+            // TODO 9.0 rendering Mode?
+
+            $fusionGlobals = FusionGlobals::fromArray(array_filter([
+                'request' => $this->assignedActionRequest,
+                'renderingMode' => $renderingMode
+            ]));
+
+            $this->fusionRuntime = $this->runtimeFactory->createFromConfiguration(
+                $fusionConfiguration,
+                $fusionGlobals
+            );
+            if (isset($this->options['enableContentCache']) && $this->options['enableContentCache'] !== null) {
+                $this->fusionRuntime->setEnableContentCache($this->options['enableContentCache']);
+            }
         }
         return $this->fusionRuntime;
     }
@@ -197,10 +206,16 @@ class FusionView extends AbstractView
      *
      * @param string $key
      * @param mixed $value
-     * @return \Neos\Neos\View\FusionView
      */
-    public function assign($key, $value)
+    public function assign(string $key, mixed $value): self
     {
+        if ($key === 'request') {
+            // the request cannot be used as "normal" fusion variable and must be treated as FusionGlobal
+            // to for example not cache it accidentally
+            // additionally we need it for special request based handling in the view
+            $this->assignedActionRequest = $value;
+            return $this;
+        }
         $this->fusionRuntime = null;
         return parent::assign($key, $value);
     }
