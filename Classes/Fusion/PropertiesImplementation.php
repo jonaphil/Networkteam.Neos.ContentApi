@@ -152,10 +152,34 @@ class PropertiesImplementation extends AbstractFusionObject
         // TODO 9.0: Remove LinkingService - use nodeUriBuilder?
         // Convert node references set by LinkEditor to URIs
         if (is_string($propertyValue) && preg_match('/^node:\/\/[a-z0-9-]+$/', $propertyValue)) {
-            $linkingService = $this->linkingService;
-            $controllerContext = $this->runtime->getControllerContext();
-            $node = $this->runtime->getCurrentContext()['node'];
-            $resolvedUri = $linkingService->resolveNodeUri($propertyValue, $node, $controllerContext, false);
+            $possibleRequest = $this->runtime->fusionGlobals->get('request');
+            // Since the properties are only called in an Request we can be sure an Action Request exists.
+            $nodeUriBuilder = $this->nodeUriBuilderFactory->forActionRequest($possibleRequest);
+
+            $currentContext = $this->runtime->getCurrentContext();
+            $baseNode = $currentContext[$this->getBaseNodeName()] ?? null;
+            if (!$baseNode instanceof Node) {
+                throw new \RuntimeException(sprintf(
+                    'If "node" is passed as string a base node in must be set in "%s". Given: %s',
+                    $this->getBaseNodeName(),
+                    get_debug_type($baseNode)
+                ), 1719996392);
+            }
+
+            $possibleAbsoluteNodePath = $this->legacyNodePathNormalizer->tryResolveLegacyPathSyntaxToAbsoluteNodePath($propertyValue, $baseNode);
+            $nodeAddress = $this->nodeAddressNormalizer->resolveNodeAddressByPath(
+                $possibleAbsoluteNodePath ?? $node,
+                $baseNode
+            );
+            $resolvedUri = '';
+
+            try {
+                $resolvedUri = $nodeUriBuilder->uriFor($nodeAddress, $options);
+            } catch (NoMatchingRouteException $exception) {
+                $this->logger->error(
+                    printf('Link to referenced node could not be created: Node ContextPath: %s, Exception: %s', NodeAddress::fromNode($referencedNode)->toJson(), $exception)
+                );
+            }
             return $resolvedUri;
         }
 

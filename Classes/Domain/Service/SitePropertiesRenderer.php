@@ -2,6 +2,7 @@
 namespace Networkteam\Neos\ContentApi\Domain\Service;
 
 use Neos\Flow\Annotations as Flow;
+use Neos\Rector\ContentRepository90\Legacy\LegacyContextStub;
 use Neos\Flow\Mvc\Controller\ControllerContext;
 use Neos\Flow\Security\Exception;
 use Neos\Neos\Domain\Model\Site;
@@ -14,12 +15,6 @@ use Neos\Neos\Domain\Service\FusionService;
  */
 class SitePropertiesRenderer
 {
-
-    /**
-     * @Flow\Inject
-     * @var ContentContextFactory
-     */
-    protected $contentContextFactory;
 
     /**
      * @Flow\Inject
@@ -37,12 +32,14 @@ class SitePropertiesRenderer
 	 */
     public function renderSiteProperties(Site $site, ControllerContext $controllerContext, string $workspaceName = 'live', array $dimensionValues = []): array
     {
-        /** @var ContentContext $contentContext */
-        $contentContext = $this->contentContextFactory->create([
+        /** @var LegacyContextStub $contentContext */
+        $contentContext = new LegacyContextStub([
             'workspaceName' => $workspaceName,
             'currentSite' => $site,
 			'dimensions' => $dimensionValues
         ]);
+        // TODO 9.0 migration: !! ContentContext::getCurrentSiteNode() is removed in Neos 9.0. Use Subgraph and traverse up to "Neos.Neos:Site" node.
+
         $siteNode = $contentContext->getCurrentSiteNode();
         $runtime = $this->fusionService->createRuntime($siteNode, $controllerContext);
         $runtime->pushContextArray([

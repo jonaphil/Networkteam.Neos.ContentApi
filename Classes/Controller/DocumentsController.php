@@ -3,6 +3,8 @@
 namespace Networkteam\Neos\ContentApi\Controller;
 
 use Neos\ContentRepository\Domain\Model\NodeInterface;
+use Neos\Rector\ContentRepository90\Legacy\LegacyContextStub;
+use Neos\ContentRepository\Core\Projection\ContentGraph\Node;
 use Neos\ContentRepository\Domain\Model\NodeType;
 use Neos\ContentRepository\Domain\Utility\NodePaths;
 use Neos\ContentRepository\Exception\NodeException;
@@ -44,12 +46,6 @@ class DocumentsController extends ActionController
 
     /**
      * @Flow\Inject
-     * @var ContentContextFactory
-     */
-    protected $contentContextFactory;
-
-    /**
-     * @Flow\Inject
      * @var DomainRepository
      */
     protected $domainRepository;
@@ -83,6 +79,8 @@ class DocumentsController extends ActionController
      * @var boolean
      */
     protected $checkRedirects = false;
+    #[\Neos\Flow\Annotations\Inject]
+    protected \Neos\ContentRepositoryRegistry\ContentRepositoryRegistry $contentRepositoryRegistry;
 
     /**
      * List all document nodes
@@ -108,12 +106,13 @@ class DocumentsController extends ActionController
         $siteNodeName = $site->getNodeName();
         foreach ($this->nodeEnumerator->siteNodeInContexts($site, $workspaceName, $dimensionValues) as $siteNode) {
             foreach ($this->nodeEnumerator->recurseDocumentChildNodes($siteNode) as $documentNode) {
-                $nodeType = $documentNode->getNodeType();
+                $contentRepository = $this->contentRepositoryRegistry->get($documentNode->contentRepositoryId);
+                $nodeType = $contentRepository->getNodeTypeManager()->getNodeType($documentNode->nodeTypeName);
                 if ($this->isIgnoredNodeType($nodeType)) {
                     continue;
                 }
 
-                $nodeAggregateIdentifier = $documentNode->getNodeAggregateIdentifier();
+                $nodeAggregateIdentifier = $documentNode->aggregateId;
                 $creationDateTime = $documentNode->getCreationDateTime();
                 $lastPublicationDateTime = $documentNode->getLastPublicationDateTime();
                 $availableDimensions = $this->contentDimensionPresetSource->getAllPresets();
@@ -128,7 +127,7 @@ class DocumentsController extends ActionController
                 );
                 $documents[] = [
                     'identifier' => (string)$nodeAggregateIdentifier,
-                    'contextPath' => $documentNode->getContextPath(),
+                    'contextPath' => \Neos\ContentRepository\Core\SharedModel\Node\NodeAddress::fromNode($documentNode)->toJson(),
                     'dimensions' => $dimensions,
                     'site' => $siteNodeName,
                     'routePath' => $routePath,
@@ -160,7 +159,7 @@ class DocumentsController extends ActionController
         if ($path !== null) {
             $path = ltrim($path, '/');
 
-            $routePart = $this->objectManager->get(FrontendNodeRoutePartHandlerInterface::class);
+            $routePart = $this->objectManager->get(\Neos\Neos\FrontendRouting\FrontendNodeRoutePartHandlerInterface::class);
             $routePart->setName('node');
 
             $parameters = $this->request->getHttpRequest()->getAttribute(ServerRequestAttributes::ROUTING_PARAMETERS) ?? RouteParameters::createEmpty();
@@ -189,10 +188,10 @@ class DocumentsController extends ActionController
         $workspaceName = $nodePathAndContext['workspaceName'];
         $dimensions = $nodePathAndContext['dimensions'];
 
-        $contentContext = $this->contentContextFactory->create($this->prepareContextProperties($workspaceName,
+        $contentContext = new LegacyContextStub($this->prepareContextProperties($workspaceName,
             $dimensions));
         $documentNode = $contentContext->getNode($nodePath);
-        if (!$documentNode instanceof NodeInterface) {
+        if (!$documentNode instanceof Node) {
             if ($path !== null) {
                 $redirect = $this->findPossibleRedirect($path, $this->request->getHttpRequest()->getUri()->getHost());
                 if ($redirect !== null) {
@@ -211,6 +210,8 @@ class DocumentsController extends ActionController
         $fusionView = new FusionView($viewOptions);
         // TODO Add custom Response and intercept headers from result
         $fusionView->setControllerContext($this->controllerContext);
+        // TODO 9.0 migration: !! ContentContext::getCurrentSiteNode() is removed in Neos 9.0. Use Subgraph and traverse up to "Neos.Neos:Site" node.
+
         $fusionView->assign('site', $contentContext->getCurrentSiteNode());
         $fusionView->assign('node', $documentNode);
         $fusionView->setFusionPath('contentApi/document');
@@ -233,10 +234,10 @@ class DocumentsController extends ActionController
         $workspaceName = $nodePathAndContext['workspaceName'];
         $dimensions = $nodePathAndContext['dimensions'];
 
-        $contentContext = $this->contentContextFactory->create($this->prepareContextProperties($workspaceName,
+        $contentContext = new \Neos\Rector\ContentRepository90\Legacy\LegacyContextStub($this->prepareContextProperties($workspaceName,
             $dimensions));
         $node = $contentContext->getNode($nodePath);
-        if (!$node instanceof NodeInterface) {
+        if (!$node instanceof \Neos\ContentRepository\Core\Projection\ContentGraph\Node) {
             throw new Exception\NodeNotFoundException(sprintf('Node with path "%s" not found', $nodePath),
                 1611245114);
         }
@@ -245,6 +246,8 @@ class DocumentsController extends ActionController
         $fusionView = new FusionView($viewOptions);
         // TODO Add custom Response and intercept headers from result
         $fusionView->setControllerContext($this->controllerContext);
+        // TODO 9.0 migration: !! ContentContext::getCurrentSiteNode() is removed in Neos 9.0. Use Subgraph and traverse up to "Neos.Neos:Site" node.
+
         $fusionView->assign('site', $contentContext->getCurrentSiteNode());
         $fusionView->assign('node', $node);
         $fusionView->setFusionPath('contentApi/node');
@@ -280,7 +283,9 @@ class DocumentsController extends ActionController
             throw new Exception('Invalid query name', 1715086845);
         }
 
-        $contentContext = $this->contentContextFactory->create($this->prepareContextProperties($workspaceName ?? 'live', $dimensions));
+        $contentContext = new \Neos\Rector\ContentRepository90\Legacy\LegacyContextStub($this->prepareContextProperties($workspaceName ?? 'live', $dimensions));
+        // TODO 9.0 migration: !! ContentContext::getCurrentSiteNode() is removed in Neos 9.0. Use Subgraph and traverse up to "Neos.Neos:Site" node.
+
 
         $siteNode = $contentContext->getCurrentSiteNode();
         $node = $siteNode;
@@ -289,10 +294,12 @@ class DocumentsController extends ActionController
         $fusionView = new FusionView($viewOptions);
         // TODO Add custom Response and intercept headers from result
         $fusionView->setControllerContext($this->controllerContext);
+        // TODO 9.0 migration: !! ContentContext::getCurrentSiteNode() is removed in Neos 9.0. Use Subgraph and traverse up to "Neos.Neos:Site" node.
+
         $fusionView->assign('site', $contentContext->getCurrentSiteNode());
         $fusionView->assign('node', $node);
         $fusionView->assign('extraContextVariables', [
-            'params' => $params,
+            'params' => ,
         ]);
 
         $fusionView->setFusionPath('contentApi/queries/' . $queryName);
@@ -344,7 +351,7 @@ class DocumentsController extends ActionController
         return $ignoredNodeTypes;
     }
 
-    private function isIgnoredNodeType(NodeType $nodeType): bool
+    private function isIgnoredNodeType(\Neos\ContentRepository\Core\NodeType\NodeType $nodeType): bool
     {
         foreach ($this->getIgnoredNodeTypes() as $ignoredNodeType) {
             if ($nodeType->isOfType($ignoredNodeType)) {
